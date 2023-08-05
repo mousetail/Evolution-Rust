@@ -1,35 +1,15 @@
-use serde::{ser::SerializeSeq, Serialize};
+mod serde_arrays;
+
+use serde::{Deserialize, Serialize};
 
 type EvolutionMatrix<const INPUT: usize, const OUTPUT: usize> = nalgebra::Matrix<
-    f64,
+    f32,
     nalgebra::Const<INPUT>,
     nalgebra::Const<OUTPUT>,
-    nalgebra::ArrayStorage<f64, INPUT, OUTPUT>,
+    nalgebra::ArrayStorage<f32, INPUT, OUTPUT>,
 >;
 
-// fn deserialize_matricies<const SIZE: usize, const LENGTH: usize, D: serde::Deserializer>(
-// ) -> Result<[EvolutionMatrix<SIZE, SIZE>; LENGTH], D::Error> {
-
-// }
-
-fn serlialize_matricies<const SIZE: usize, const LENGTH: usize, S: serde::Serializer>(
-    value: &[EvolutionMatrix<SIZE, SIZE>; LENGTH],
-    serializer: S,
-) -> Result<S::Ok, S::Error> {
-    let mut seq = serializer.serialize_seq(Some(SIZE))?;
-    for i in value.iter() {
-        seq.serialize_element(i)?;
-    }
-    return seq.end();
-}
-
-#[derive(
-    Clone,
-    PartialEq,
-    Debug,
-    Serialize,
-    // Deserialize
-)]
+#[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
 pub struct Individual<
     const INPUTS: usize,
     const LAYERS: usize,
@@ -38,16 +18,16 @@ pub struct Individual<
 > {
     input_matrix: EvolutionMatrix<INPUTS, SUBLAYERS>,
 
-    #[serde(serialize_with = "serlialize_matricies")]
+    #[serde(with = "serde_arrays")]
     matricies: [EvolutionMatrix<SUBLAYERS, SUBLAYERS>; LAYERS],
     output_matrix: EvolutionMatrix<SUBLAYERS, OUTPUTS>,
-    pub fitness: f64,
+    pub fitness: f32,
 }
 
 fn matrix_similarity<const INPUT: usize, const OUTPUT: usize>(
     one: &EvolutionMatrix<INPUT, OUTPUT>,
     two: &EvolutionMatrix<INPUT, OUTPUT>,
-) -> f64 {
+) -> f32 {
     let mut out = 0.0;
     for i in 0..INPUT {
         for j in 0..OUTPUT {
@@ -93,21 +73,21 @@ fn mutate_matrix<const INPUT: usize, const OUTPUT: usize, RNG: rand::Rng>(
 impl<const INPUTS: usize, const LAYERS: usize, const OUTPUTS: usize, const SUBLAYERS: usize>
     Individual<INPUTS, LAYERS, OUTPUTS, SUBLAYERS>
 {
-    pub fn evaluate(&self, inputs: [f64; INPUTS]) -> [f64; OUTPUTS] {
+    pub fn evaluate(&self, inputs: [f32; INPUTS]) -> [f32; OUTPUTS] {
         let layer_1 = EvolutionMatrix::<1, INPUTS>::from_row_slice(&inputs);
         let layer_2 = relu(layer_1 * self.input_matrix);
         let layer_3 = self.matricies.iter().fold(layer_2, |a, b| relu(a * b));
         return sigmoid(layer_3 * self.output_matrix).transpose().data.0[0];
     }
 
-    pub fn similarity(&self, other: &Self) -> f64 {
+    pub fn similarity(&self, other: &Self) -> f32 {
         return matrix_similarity(&self.input_matrix, &other.input_matrix)
             + self
                 .matricies
                 .iter()
                 .zip(other.matricies.iter())
                 .map(|(a, b)| matrix_similarity(a, b))
-                .sum::<f64>()
+                .sum::<f32>()
             + matrix_similarity(&self.output_matrix, &other.output_matrix);
     }
 
@@ -158,6 +138,17 @@ impl<const INPUTS: usize, const LAYERS: usize, const OUTPUTS: usize, const SUBLA
             max_size,
             max_species,
             individuals: (0..max_size).map(|_| Individual::new_random(rng)).collect(),
+        }
+    }
+
+    pub fn new_from_individuals(
+        max_species: usize,
+        individuals: Vec<Individual<INPUTS, LAYERS, OUTPUTS, SUBLAYERS>>,
+    ) -> Self {
+        Self {
+            max_size: individuals.len(),
+            max_species,
+            individuals,
         }
     }
 
