@@ -1,8 +1,8 @@
-use ggez::{conf::WindowSetup, *};
+use ggez::{conf::WindowSetup, graphics::GraphicsContext, *};
 use rand::Rng;
 use serde::{Deserialize, Serialize};
 
-type Brain = evolution_rust::Individual<8, 2, 6, 4>;
+type Brain = evolution_rust::Individual<10, 2, 6, 5>;
 
 #[derive(Serialize, Deserialize)]
 struct Spaceship {
@@ -43,6 +43,95 @@ struct State {
     round: u32,
     best_fitness: f32,
     food_eaten: Vec<u32>,
+}
+
+impl State {
+    fn draw_matrix<const WIDTH: usize, const HEIGHT: usize>(
+        matrix: evolution_rust::EvolutionMatrix<WIDTH, HEIGHT>,
+        canvas: &mut graphics::Canvas,
+        ctx: &mut Context,
+        starting_height: usize,
+    ) -> GameResult {
+        for i in 0..WIDTH {
+            for j in 0..HEIGHT {
+                if matrix[(i, j)] != 0.0 {
+                    let value = matrix[(i, j)].abs();
+
+                    let line = graphics::Mesh::new_line(
+                        ctx,
+                        &[
+                            glam::Vec2::new(
+                                50.0 + 50.0 * i as f32 / WIDTH as f32,
+                                (starting_height as f32 - 1.0) * 50.0 / 5.0,
+                            ),
+                            glam::Vec2::new(
+                                50.0 + 50.0 * j as f32 / HEIGHT as f32,
+                                starting_height as f32 * 50.0 / 5.0,
+                            ),
+                        ],
+                        0.25,
+                        if matrix[(i, j)] > 0.0 {
+                            graphics::Color::GREEN
+                        } else {
+                            graphics::Color::RED
+                        },
+                    )?;
+                    canvas.draw(
+                        &line,
+                        graphics::DrawParam::new()
+                            .color(graphics::Color::new(value, value, value, 1.0)),
+                    );
+                }
+            }
+        }
+
+        return Ok(());
+    }
+
+    fn draw_network(canvas: &mut graphics::Canvas, brain: &Brain, ctx: &mut Context) -> GameResult {
+        let circle = graphics::Mesh::new_circle(
+            ctx,
+            graphics::DrawMode::fill(),
+            mint::Point2 { x: 0.0, y: 0.0 },
+            1.0,
+            0.025,
+            graphics::Color::CYAN,
+        )?;
+
+        for layer in 0..5 {
+            let layer_size = if layer == 0 {
+                10
+            } else if layer == 4 {
+                6
+            } else {
+                5
+            };
+
+            for node in 0..layer_size {
+                canvas.draw(
+                    &circle,
+                    graphics::DrawParam::new().dest(glam::Vec2::new(
+                        50.0 + node as f32 * 50.0 / layer_size as f32,
+                        50.0 * layer as f32 / 5.0,
+                    )),
+                )
+            }
+
+            if layer == 0 {
+                continue;
+            };
+
+            if layer == 1 {
+                Self::draw_matrix(brain.input_matrix, canvas, ctx, layer)?;
+            } else if layer == 4 {
+                Self::draw_matrix(brain.output_matrix, canvas, ctx, layer)?;
+            } else {
+                Self::draw_matrix(brain.matricies[layer - 2], canvas, ctx, layer)?;
+            }
+        }
+
+        return Ok(());
+    }
 }
 
 impl ggez::event::EventHandler<GameError> for State {
@@ -97,6 +186,8 @@ impl ggez::event::EventHandler<GameError> for State {
                 greens * 16.,
                 greens_delta * 16.,
                 horizontal_green_deta * 16.,
+                ship.velocity.dot(facing_direction),
+                ship.velocity.dot(facing_direction.perp()),
                 reds * 16.0,
                 reds_delta * 16.0,
                 horizontal_red_delta * 16.0,
@@ -179,9 +270,10 @@ impl ggez::event::EventHandler<GameError> for State {
 
         return Ok(());
     }
+
     fn draw(&mut self, ctx: &mut Context) -> GameResult {
         let mut canvas = graphics::Canvas::from_frame(ctx, graphics::Color::BLACK);
-        canvas.set_screen_coordinates(graphics::Rect::new(-50.0, -50.0, 100.0, 100.0));
+        canvas.set_screen_coordinates(graphics::Rect::new(-50.0, -50.0, 150.0, 100.0));
 
         let rectangle = graphics::Mesh::new_rectangle(
             ctx,
@@ -210,16 +302,21 @@ impl ggez::event::EventHandler<GameError> for State {
             mint::Point2 { x: 0.0, y: 0.0 },
             1.0,
             0.025,
-            graphics::Color::GREEN,
+            graphics::Color::WHITE,
         )?;
 
         for (index, food) in FOOD_LOCATIONS.into_iter().enumerate() {
-            let color = 1.0 - self.food_eaten[index] as f32 / self.population.len() as f32;
+            let color = 1.0 - 4.0 * self.food_eaten[index] as f32 / self.population.len() as f32;
             canvas.draw(
                 &food_circle,
                 graphics::DrawParam::new()
                     .dest(food)
-                    .color(graphics::Color::new(color, color, color, 1.0)),
+                    .color(graphics::Color::new(
+                        1.0 - color,
+                        color * 4.0,
+                        1.0 - 2.0 * color,
+                        1.0,
+                    )),
             );
         }
 
@@ -250,12 +347,14 @@ impl ggez::event::EventHandler<GameError> for State {
                 .dest(glam::Vec2::new(-45.0, -45.0)),
         );
 
+        Self::draw_network(&mut canvas, &self.population[0].brain, ctx);
+
         canvas.finish(ctx)?;
         Ok(())
     }
 }
 
-static FOOD_LOCATIONS: [glam::Vec2; 118] = [
+static FOOD_LOCATIONS: [glam::Vec2; 168] = [
     glam::Vec2::new(0., -12.),
     glam::Vec2::new(6., -25.),
     glam::Vec2::new(12., 41.),
@@ -374,8 +473,58 @@ static FOOD_LOCATIONS: [glam::Vec2; 118] = [
     glam::Vec2::new(-25.16602168006189, 29.67217016997148),
     glam::Vec2::new(-34.0539210629473, -40.6566312298508),
     glam::Vec2::new(35.36240234245935, -30.68441504351222),
+    glam::Vec2::new(22.392399389032548, -36.81016588151426),
+    glam::Vec2::new(-32.5443501083422, 29.18419109584081),
+    glam::Vec2::new(5.995479331279442, 37.263970385103),
+    glam::Vec2::new(0.6241183309363285, -13.667256512826965),
+    glam::Vec2::new(24.17244159519106, 1.534724149807484),
+    glam::Vec2::new(-29.28396793201935, 40.27702963353179),
+    glam::Vec2::new(-3.995671669509983, 6.376897759107411),
+    glam::Vec2::new(30.506471746360422, 14.000861649737633),
+    glam::Vec2::new(-30.084348019214882, -12.665829397386862),
+    glam::Vec2::new(-7.911412117312596, 15.61067088917003),
+    glam::Vec2::new(-39.4331090103622, 12.99181568362338),
+    glam::Vec2::new(-46.626631522922956, -23.417028344592026),
+    glam::Vec2::new(0.8328433305161291, 44.00009867242622),
+    glam::Vec2::new(-22.391480312540537, 39.24922659185646),
+    glam::Vec2::new(17.659034848474832, 46.8317834374303),
+    glam::Vec2::new(-44.75847786351424, 6.800469225189441),
+    glam::Vec2::new(-1.0021299477330543, -34.25022272826349),
+    glam::Vec2::new(-19.352889846850797, 11.167849433077965),
+    glam::Vec2::new(-22.817411727953044, -42.65186168881485),
+    glam::Vec2::new(-8.205366200382757, -38.36005036955677),
+    glam::Vec2::new(-46.93198461689954, -33.11638880144609),
+    glam::Vec2::new(28.721359178794007, -39.03141624693327),
+    glam::Vec2::new(-43.81315693423482, -26.06775962238357),
+    glam::Vec2::new(18.139603477800485, -32.23256808791829),
+    glam::Vec2::new(-8.011443645344611, -19.254633630915894),
+    glam::Vec2::new(40.348810443856856, 36.65661220616269),
+    glam::Vec2::new(-32.732046731825, 29.93086080936075),
+    glam::Vec2::new(25.648930290637466, 1.4764642814472362),
+    glam::Vec2::new(-26.897330818071428, 34.59157102041681),
+    glam::Vec2::new(-27.97950741564864, 22.728563489897432),
+    glam::Vec2::new(42.5273938925672, -14.636121882373407),
+    glam::Vec2::new(-13.122238762110872, -0.34003986459591506),
+    glam::Vec2::new(39.04458355219319, -31.883944574677383),
+    glam::Vec2::new(25.341518656176838, 41.926036829258535),
+    glam::Vec2::new(8.914361667031683, -11.650953380455698),
+    glam::Vec2::new(26.02994556040915, 29.405711323294756),
+    glam::Vec2::new(-17.81408903792203, -46.68322496859222),
+    glam::Vec2::new(-8.59969977856224, -4.491810124498866),
+    glam::Vec2::new(24.15134927480631, 7.144793845359965),
+    glam::Vec2::new(26.43492959263823, -30.505020903469678),
+    glam::Vec2::new(45.44009327344605, -1.7771145950888458),
+    glam::Vec2::new(-0.42235357025010356, 24.14412279047582),
+    glam::Vec2::new(44.64694707568917, 44.19742762679794),
+    glam::Vec2::new(-0.1872083797467321, 1.352275561916794),
+    glam::Vec2::new(-0.9012038206794746, 22.02774857059635),
+    glam::Vec2::new(-38.002402528479166, -26.85664611475854),
+    glam::Vec2::new(-16.574490757719865, 36.362602095181664),
+    glam::Vec2::new(7.672846431806185, 19.623917625876917),
+    glam::Vec2::new(-30.400268758523115, 15.38321733065258),
+    glam::Vec2::new(40.38253365064381, -22.529672969759197),
 ];
-static WALL_LOCATIONS: [glam::Vec2; 100] = [
+static WALL_LOCATIONS: [glam::Vec2; 101] = [
     glam::Vec2::new(-43.24182006985064, 37.02130316244868),
     glam::Vec2::new(-19.57081002728108, 0.5046357786797826),
     glam::Vec2::new(38.23447366331598, -38.86666787947049),
@@ -396,6 +545,7 @@ static WALL_LOCATIONS: [glam::Vec2; 100] = [
     glam::Vec2::new(-31.754434594077516, 17.089489861049504),
     glam::Vec2::new(-43.87963021604549, 20.698098854164876),
     glam::Vec2::new(-12.964413577233216, -10.399441253553327),
+    glam::Vec2::new(10.964413577233216, -0.25),
     glam::Vec2::new(-50.0, -50.0),
     glam::Vec2::new(-50.0, -50.0),
     glam::Vec2::new(50.0, -50.0),
@@ -513,7 +663,7 @@ fn main() -> Result<(), GameError> {
     };
     let cb = ggez::ContextBuilder::new("rust_evolution", "mousetail")
         .window_setup(WindowSetup::default().title("Rust Evolution"))
-        .window_mode(conf::WindowMode::default().dimensions(1024.0, 1024.0));
+        .window_mode(conf::WindowMode::default().dimensions(1536.0, 1024.0));
     let (ctx, event_loop) = cb.build().unwrap();
     event::run(ctx, event_loop, state);
 

@@ -2,7 +2,7 @@ mod serde_arrays;
 
 use serde::{Deserialize, Serialize};
 
-type EvolutionMatrix<const INPUT: usize, const OUTPUT: usize> = nalgebra::Matrix<
+pub type EvolutionMatrix<const INPUT: usize, const OUTPUT: usize> = nalgebra::Matrix<
     f32,
     nalgebra::Const<INPUT>,
     nalgebra::Const<OUTPUT>,
@@ -16,11 +16,11 @@ pub struct Individual<
     const OUTPUTS: usize,
     const SUBLAYERS: usize,
 > {
-    input_matrix: EvolutionMatrix<INPUTS, SUBLAYERS>,
+    pub input_matrix: EvolutionMatrix<INPUTS, SUBLAYERS>,
 
     #[serde(with = "serde_arrays")]
-    matricies: [EvolutionMatrix<SUBLAYERS, SUBLAYERS>; LAYERS],
-    output_matrix: EvolutionMatrix<SUBLAYERS, OUTPUTS>,
+    pub matricies: [EvolutionMatrix<SUBLAYERS, SUBLAYERS>; LAYERS],
+    pub output_matrix: EvolutionMatrix<SUBLAYERS, OUTPUTS>,
     pub fitness: f32,
 }
 
@@ -65,8 +65,16 @@ fn mutate_matrix<const INPUT: usize, const OUTPUT: usize, RNG: rand::Rng>(
     matrix: &mut EvolutionMatrix<INPUT, OUTPUT>,
     rng: &mut RNG,
 ) {
-    let x = rng.gen_range(0..INPUT);
-    let y = rng.gen_range(0..OUTPUT);
+    let mut attempts = 0;
+
+    let mut x = rng.gen_range(0..INPUT);
+    let mut y = rng.gen_range(0..OUTPUT);
+    while matrix[(x, y)] == 0.0 && attempts < 3 {
+        x = rng.gen_range(0..INPUT);
+        y = rng.gen_range(0..OUTPUT);
+        attempts += 1;
+    }
+
     matrix[(x, y)] += rng.gen_range(-0.1..=0.1);
 }
 
