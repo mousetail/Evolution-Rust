@@ -51,36 +51,35 @@ impl State {
         canvas: &mut graphics::Canvas,
         ctx: &mut Context,
         starting_height: usize,
+        rect: graphics::Rect,
     ) -> GameResult {
         for i in 0..WIDTH {
             for j in 0..HEIGHT {
                 if matrix[(i, j)] != 0.0 {
                     let value = matrix[(i, j)].abs();
+                    let value_u8 = ((value * 127.0) as u8).min(127);
+                    let color = if matrix[(i, j)] > 0.0 {
+                        graphics::Color::from_rgb(128 - value_u8, 128 + value_u8, 128 - value_u8)
+                    } else {
+                        graphics::Color::from_rgb(128, 128 - value_u8, 128 - value_u8)
+                    };
 
                     let line = graphics::Mesh::new_line(
                         ctx,
                         &[
                             glam::Vec2::new(
-                                50.0 + 50.0 * i as f32 / WIDTH as f32,
-                                (starting_height as f32 - 1.0) * 50.0 / 5.0,
+                                rect.x + rect.w * i as f32 / WIDTH as f32,
+                                rect.y + (starting_height as f32 - 1.0) * rect.h / 5.0,
                             ),
                             glam::Vec2::new(
-                                50.0 + 50.0 * j as f32 / HEIGHT as f32,
-                                starting_height as f32 * 50.0 / 5.0,
+                                rect.x + rect.w * j as f32 / HEIGHT as f32,
+                                rect.y + starting_height as f32 * rect.h / 5.0,
                             ),
                         ],
                         0.25,
-                        if matrix[(i, j)] > 0.0 {
-                            graphics::Color::GREEN
-                        } else {
-                            graphics::Color::RED
-                        },
+                        graphics::Color::WHITE,
                     )?;
-                    canvas.draw(
-                        &line,
-                        graphics::DrawParam::new()
-                            .color(graphics::Color::new(value, value, value, 1.0)),
-                    );
+                    canvas.draw(&line, graphics::DrawParam::new().color(color));
                 }
             }
         }
@@ -88,14 +87,19 @@ impl State {
         return Ok(());
     }
 
-    fn draw_network(canvas: &mut graphics::Canvas, brain: &Brain, ctx: &mut Context) -> GameResult {
+    fn draw_network(
+        canvas: &mut graphics::Canvas,
+        brain: &Brain,
+        ctx: &mut Context,
+        rect: graphics::Rect,
+    ) -> GameResult {
         let circle = graphics::Mesh::new_circle(
             ctx,
             graphics::DrawMode::fill(),
             mint::Point2 { x: 0.0, y: 0.0 },
             1.0,
             0.025,
-            graphics::Color::CYAN,
+            graphics::Color::WHITE,
         )?;
 
         for layer in 0..5 {
@@ -107,12 +111,14 @@ impl State {
                 5
             };
 
+            let y = rect.y + layer as f32 * rect.h / 5.0;
+
             for node in 0..layer_size {
                 canvas.draw(
                     &circle,
                     graphics::DrawParam::new().dest(glam::Vec2::new(
-                        50.0 + node as f32 * 50.0 / layer_size as f32,
-                        50.0 * layer as f32 / 5.0,
+                        rect.x + node as f32 * rect.w / layer_size as f32,
+                        y,
                     )),
                 )
             }
@@ -122,11 +128,11 @@ impl State {
             };
 
             if layer == 1 {
-                Self::draw_matrix(brain.input_matrix, canvas, ctx, layer)?;
+                Self::draw_matrix(brain.input_matrix, canvas, ctx, layer, rect)?;
             } else if layer == 4 {
-                Self::draw_matrix(brain.output_matrix, canvas, ctx, layer)?;
+                Self::draw_matrix(brain.output_matrix, canvas, ctx, layer, rect)?;
             } else {
-                Self::draw_matrix(brain.matricies[layer - 2], canvas, ctx, layer)?;
+                Self::draw_matrix(brain.matricies[layer - 2], canvas, ctx, layer, rect)?;
             }
         }
 
@@ -347,7 +353,12 @@ impl ggez::event::EventHandler for State {
                 .dest(glam::Vec2::new(-45.0, -45.0)),
         );
 
-        Self::draw_network(&mut canvas, &self.population[0].brain, ctx);
+        Self::draw_network(
+            &mut canvas,
+            &self.population[0].brain,
+            ctx,
+            graphics::Rect::new(54.0, -48.0, 42.0, 96.0),
+        )?;
 
         canvas.finish(ctx)?;
         Ok(())
