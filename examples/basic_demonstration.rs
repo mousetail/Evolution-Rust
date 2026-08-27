@@ -3,7 +3,7 @@ use serde_json;
 use std::io::Write;
 
 fn main() {
-    let mut rng = rand::thread_rng();
+    let mut rng = rand::rng();
     let mut population: Population<4, 1, 1, 4> = Population::new(100, 20, &mut rng);
 
     let mut champions: Vec<Individual<4, 1, 1, 4>> = Vec::new();

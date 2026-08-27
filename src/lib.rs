@@ -1,5 +1,6 @@
 mod serde_arrays;
 
+use rand::prelude::*;
 use serde::{Deserialize, Serialize};
 
 pub type EvolutionMatrix<const INPUT: usize, const OUTPUT: usize> = nalgebra::Matrix<
@@ -45,37 +46,37 @@ fn sigmoid<const SIZE: usize>(matrix: EvolutionMatrix<1, SIZE>) -> EvolutionMatr
     matrix.map(|k| 1.0 / (1.0 + k.exp()))
 }
 
-fn random_matrix<const INPUT: usize, const OUTPUT: usize, RNG: rand::Rng>(
-    rng: &mut RNG,
+fn random_matrix<const INPUT: usize, const OUTPUT: usize>(
+    rng: &mut impl Rng,
 ) -> EvolutionMatrix<INPUT, OUTPUT> {
     let mut matrix = EvolutionMatrix::<INPUT, OUTPUT>::zeros();
 
     for i in 0..INPUT {
         for j in 0..OUTPUT {
-            if rng.gen_bool(0.25) {
-                matrix[(i, j)] = rng.gen_range(-1.0..=1.0);
+            if rng.random_bool(0.25) {
+                matrix[(i, j)] = rng.random_range(-1.0..1.0);
             }
         }
     }
 
-    return matrix;
+    matrix
 }
 
-fn mutate_matrix<const INPUT: usize, const OUTPUT: usize, RNG: rand::Rng>(
+fn mutate_matrix<const INPUT: usize, const OUTPUT: usize>(
     matrix: &mut EvolutionMatrix<INPUT, OUTPUT>,
-    rng: &mut RNG,
+    rng: &mut impl Rng,
 ) {
     let mut attempts = 0;
 
-    let mut x = rng.gen_range(0..INPUT);
-    let mut y = rng.gen_range(0..OUTPUT);
+    let mut x = rng.random_range(0..INPUT);
+    let mut y = rng.random_range(0..OUTPUT);
     while matrix[(x, y)] == 0.0 && attempts < 3 {
-        x = rng.gen_range(0..INPUT);
-        y = rng.gen_range(0..OUTPUT);
+        x = rng.random_range(0..INPUT);
+        y = rng.random_range(0..OUTPUT);
         attempts += 1;
     }
 
-    matrix[(x, y)] += rng.gen_range(-0.1..=0.1);
+    matrix[(x, y)] += rng.random_range(-0.1..0.1);
 }
 
 impl<const INPUTS: usize, const LAYERS: usize, const OUTPUTS: usize, const SUBLAYERS: usize>
@@ -99,8 +100,8 @@ impl<const INPUTS: usize, const LAYERS: usize, const OUTPUTS: usize, const SUBLA
             + matrix_similarity(&self.output_matrix, &other.output_matrix);
     }
 
-    pub fn mutate<RAND: rand::Rng>(&mut self, rng: &mut RAND) -> () {
-        let layer = rng.gen_range(0..LAYERS + 2);
+    pub fn mutate(&mut self, rng: &mut impl Rng) {
+        let layer = rng.random_range(0..=LAYERS + 1);
         if layer == 0 {
             mutate_matrix(&mut self.input_matrix, rng);
         } else if layer == LAYERS + 1 {
@@ -110,7 +111,7 @@ impl<const INPUTS: usize, const LAYERS: usize, const OUTPUTS: usize, const SUBLA
         }
     }
 
-    pub fn new_random<RAND: rand::Rng>(rng: &mut RAND) -> Self {
+    pub fn new_random(rng: &mut impl Rng) -> Self {
         let mut matricies = [EvolutionMatrix::<SUBLAYERS, SUBLAYERS>::zeros(); LAYERS];
 
         for i in matricies.iter_mut() {
@@ -141,7 +142,7 @@ pub struct Population<
 impl<const INPUTS: usize, const LAYERS: usize, const OUTPUTS: usize, const SUBLAYERS: usize>
     Population<INPUTS, LAYERS, OUTPUTS, SUBLAYERS>
 {
-    pub fn new<RNG: rand::Rng>(max_size: usize, max_species: usize, rng: &mut RNG) -> Self {
+    pub fn new(max_size: usize, max_species: usize, rng: &mut impl Rng) -> Self {
         Self {
             max_size,
             max_species,
@@ -177,7 +178,7 @@ impl<const INPUTS: usize, const LAYERS: usize, const OUTPUTS: usize, const SUBLA
         species
     }
 
-    pub fn evolve<RNG: rand::Rng>(&mut self, rng: &mut RNG) {
+    pub fn evolve(&mut self, rng: &mut impl Rng) {
         self.individuals
             .sort_by(|i, j| (-i.fitness).total_cmp(&-j.fitness));
 
@@ -191,12 +192,11 @@ impl<const INPUTS: usize, const LAYERS: usize, const OUTPUTS: usize, const SUBLA
         let mut i = 0;
         while new_individuals.len() < self.max_size {
             let specie = &species[i % species.len().min(self.max_species)];
-            let mut new_individual = specie[rng
-                .gen_range(0..specie.len())
-                .min(rng.gen_range(0..specie.len()))]
-            .clone();
+            let idx1 = rng.random_range(0..specie.len());
+            let idx2 = rng.random_range(0..specie.len());
+            let mut new_individual = specie[idx1.min(idx2)].clone();
 
-            for _ in 0..rng.gen_range(1..20) {
+            for _ in 0..rng.random_range(1..=19) {
                 new_individual.mutate(rng);
             }
             new_individuals.push(new_individual);

@@ -1,5 +1,5 @@
-use ggez::{conf::WindowSetup, graphics::GraphicsContext, *};
-use rand::Rng;
+use ggez::{conf::WindowSetup, *};
+use rand::prelude::*;
 use serde::{Deserialize, Serialize};
 
 type Brain = evolution_rust::Individual<10, 2, 6, 5>;
@@ -134,8 +134,8 @@ impl State {
     }
 }
 
-impl ggez::event::EventHandler<GameError> for State {
-    fn update(&mut self, _ctx: &mut Context) -> GameResult {
+impl ggez::event::EventHandler for State {
+    fn update(&mut self, _ctx: &mut ggez::Context) -> GameResult {
         self.steps += 1;
 
         let mut living_ships = 0;
@@ -251,14 +251,14 @@ impl ggez::event::EventHandler<GameError> for State {
                 10,
                 self.population.iter().map(|i| i.brain.clone()).collect(),
             );
-            population.evolve(&mut rand::thread_rng());
+            population.evolve(&mut rand::rng());
 
             self.population = population
                 .individuals
                 .into_iter()
                 .map(Spaceship::new)
                 .collect();
-            let new_random_angle = rand::thread_rng().gen_range(-3.0..3.0);
+            let new_random_angle = rand::rng().random_range(-3.0..3.0);
             self.population
                 .iter_mut()
                 .for_each(|i| i.angle = new_random_angle);
@@ -629,7 +629,7 @@ static WALL_LOCATIONS: [glam::Vec2; 101] = [
 ];
 
 fn main() -> Result<(), GameError> {
-    let mut rng = rand::thread_rng();
+    let mut rng = rand::rng();
     let population = evolution_rust::Population::new(100, 10, &mut rng);
 
     let state = if std::path::Path::new("save.cbor").exists() {
