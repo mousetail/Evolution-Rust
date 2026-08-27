@@ -4,6 +4,12 @@ use serde::{Deserialize, Serialize};
 
 type Brain = evolution_rust::Individual<10, 2, 6, 5>;
 
+const NUMBER_OF_FOOD_LOCATIONS: usize = 168;
+const NUMBER_OF_WALL_LOCATIONS: usize = 101;
+const ARENA_SIZE: f32 = 50.0;
+const WALL_RADIUS: f32 = 3.0;
+const FOOD_RADIUS: f32 = 0.5;
+
 #[derive(Serialize, Deserialize)]
 struct Spaceship {
     brain: Brain,
@@ -22,7 +28,7 @@ impl Spaceship {
     fn new(brain: Brain) -> Self {
         Spaceship {
             brain,
-            food: FOOD_LOCATIONS.iter().map(|_| true).collect(),
+            food: vec![true; NUMBER_OF_FOOD_LOCATIONS],
             angle: 0.,
             location: glam::Vec2::new(0., 0.),
             alive: true,
@@ -43,6 +49,9 @@ struct State {
     round: u32,
     best_fitness: f32,
     food_eaten: Vec<u32>,
+
+    wall_locations: Vec<glam::Vec2>,
+    food_locations: Vec<glam::Vec2>,
 }
 
 impl State {
@@ -138,6 +147,69 @@ impl State {
 
         return Ok(());
     }
+
+    fn create_random_wall_locations() -> Vec<glam::Vec2> {
+        let mut rng = rand::rng();
+        let mut wall_locations = Vec::new();
+
+        let mut x = -ARENA_SIZE;
+        while x < ARENA_SIZE {
+            wall_locations.push(glam::Vec2::new(x, -ARENA_SIZE));
+            wall_locations.push(glam::Vec2::new(x, ARENA_SIZE));
+            if (x != 0.0 && x != ARENA_SIZE * 2.0) {
+                wall_locations.push(glam::Vec2::new(-ARENA_SIZE, x));
+                wall_locations.push(glam::Vec2::new(ARENA_SIZE, x));
+            }
+            x += WALL_RADIUS * 2.0;
+        }
+
+        for _ in 0..NUMBER_OF_WALL_LOCATIONS - wall_locations.len() {
+            let mut potential_location = glam::Vec2::new(
+                rng.random_range(-ARENA_SIZE..ARENA_SIZE),
+                rng.random_range(-ARENA_SIZE..ARENA_SIZE),
+            );
+
+            while potential_location.length_squared() < WALL_RADIUS * WALL_RADIUS * 4.0
+                || wall_locations
+                    .iter()
+                    .any(|loc| loc.distance_squared(potential_location) < WALL_RADIUS * WALL_RADIUS)
+            {
+                potential_location = glam::Vec2::new(
+                    rng.random_range(-ARENA_SIZE..ARENA_SIZE),
+                    rng.random_range(-ARENA_SIZE..ARENA_SIZE),
+                );
+            }
+            wall_locations.push(potential_location);
+        }
+        wall_locations
+    }
+
+    fn create_random_food_locations(wall_locations: &[glam::Vec2]) -> Vec<glam::Vec2> {
+        let mut rng = rand::rng();
+        let mut food_locations = Vec::new();
+        for _ in 0..NUMBER_OF_FOOD_LOCATIONS {
+            let mut potential_location = glam::Vec2::new(
+                rng.random_range(-ARENA_SIZE..ARENA_SIZE),
+                rng.random_range(-ARENA_SIZE..ARENA_SIZE),
+            );
+            while potential_location.length_squared() < FOOD_RADIUS * FOOD_RADIUS * 4.0
+                || wall_locations.iter().any(|loc| {
+                    (loc).distance_squared(potential_location)
+                        < (WALL_RADIUS + FOOD_RADIUS) * (WALL_RADIUS + FOOD_RADIUS)
+                })
+                || food_locations.iter().any(|loc: &glam::Vec2| {
+                    (loc).distance_squared(potential_location) < FOOD_RADIUS * FOOD_RADIUS
+                })
+            {
+                potential_location = glam::Vec2::new(
+                    rng.random_range(-ARENA_SIZE..ARENA_SIZE),
+                    rng.random_range(-ARENA_SIZE..ARENA_SIZE),
+                );
+            }
+            food_locations.push(potential_location);
+        }
+        food_locations
+    }
 }
 
 impl ggez::event::EventHandler for State {
@@ -161,7 +233,7 @@ impl ggez::event::EventHandler for State {
 
             let mut horizontal_red_delta = 0.0;
 
-            for (index, food) in FOOD_LOCATIONS.iter().enumerate() {
+            for (index, food) in self.food_locations.iter().enumerate() {
                 if ship.food[index] {
                     let distance_squared = food.distance_squared(ship.location).max(1.0);
 
@@ -175,7 +247,7 @@ impl ggez::event::EventHandler for State {
                 }
             }
 
-            for wall in WALL_LOCATIONS {
+            for wall in &self.wall_locations {
                 let distance_squared = wall.distance_squared(ship.location).max(1.0);
 
                 reds += 1.0 / distance_squared;
@@ -216,7 +288,7 @@ impl ggez::event::EventHandler for State {
             ship.location += ship.velocity;
             ship.angle += ship.angular_velocity;
 
-            for (index, food) in FOOD_LOCATIONS.iter().enumerate() {
+            for (index, food) in self.food_locations.iter().enumerate() {
                 if ship.food[index] && ship.location.distance_squared(*food) <= 2.0 {
                     ship.food[index] = false;
                     ship.brain.fitness += 1.0;
@@ -224,7 +296,7 @@ impl ggez::event::EventHandler for State {
                 }
             }
 
-            for wall in WALL_LOCATIONS.iter() {
+            for wall in self.wall_locations.iter() {
                 if ship.location.distance_squared(*wall) <= 10.0 {
                     ship.alive = false;
                     ship.brain.fitness += self.steps as f32 / 1000.0;
@@ -269,6 +341,10 @@ impl ggez::event::EventHandler for State {
                 .iter_mut()
                 .for_each(|i| i.angle = new_random_angle);
 
+            // New Round, New Map
+            self.wall_locations = State::create_random_wall_locations();
+            self.food_locations = State::create_random_food_locations(&self.wall_locations);
+
             self.food_eaten.iter_mut().for_each(|i| *i = 0);
 
             self.steps = 0;
@@ -311,7 +387,7 @@ impl ggez::event::EventHandler for State {
             graphics::Color::WHITE,
         )?;
 
-        for (index, food) in FOOD_LOCATIONS.into_iter().enumerate() {
+        for (index, &food) in self.food_locations.iter().enumerate() {
             let color = 1.0 - 4.0 * self.food_eaten[index] as f32 / self.population.len() as f32;
             canvas.draw(
                 &food_circle,
@@ -330,12 +406,12 @@ impl ggez::event::EventHandler for State {
             ctx,
             graphics::DrawMode::fill(),
             mint::Point2 { x: 0.0, y: 0.0 },
-            3.0,
+            WALL_RADIUS,
             0.1,
             graphics::Color::RED,
         )?;
 
-        for wall in WALL_LOCATIONS {
+        for &wall in &self.wall_locations {
             canvas.draw(&wall_circle, graphics::DrawParam::new().dest(wall));
         }
 
@@ -365,283 +441,12 @@ impl ggez::event::EventHandler for State {
     }
 }
 
-static FOOD_LOCATIONS: [glam::Vec2; 168] = [
-    glam::Vec2::new(0., -12.),
-    glam::Vec2::new(6., -25.),
-    glam::Vec2::new(12., 41.),
-    glam::Vec2::new(19., 8.),
-    glam::Vec2::new(0., -25.),
-    glam::Vec2::new(6., -8.),
-    glam::Vec2::new(12., 14.),
-    glam::Vec2::new(-12., 8.),
-    glam::Vec2::new(-7.620772941740668, -42.794800208328525),
-    glam::Vec2::new(-46.82143214531385, -20.055170686389694),
-    glam::Vec2::new(16.106658915371156, -43.48280725415813),
-    glam::Vec2::new(-34.73769600107101, 23.324621318512367),
-    glam::Vec2::new(-11.566904152330103, 4.389390173107939),
-    glam::Vec2::new(-27.992831581525664, -44.638735559292286),
-    glam::Vec2::new(7.765738257574078, 6.512589854707151),
-    glam::Vec2::new(30.144901815020685, 35.58778590424604),
-    glam::Vec2::new(39.771696787117385, 20.125712105176987),
-    glam::Vec2::new(-1.818778089329638, 28.360784358666958),
-    glam::Vec2::new(14.907165255080175, 31.885570656752865),
-    glam::Vec2::new(32.251495463767576, -24.148212298992256),
-    glam::Vec2::new(28.645297908559133, -2.652983499525008),
-    glam::Vec2::new(-37.66124868498243, -28.722387341531395),
-    glam::Vec2::new(-9.178449911781474, -30.204443412254967),
-    glam::Vec2::new(-38.08968966862823, 17.778114230926498),
-    glam::Vec2::new(35.82867775449527, -15.328261864822856),
-    glam::Vec2::new(32.966640725744526, 18.975950566940423),
-    glam::Vec2::new(31.126535830112587, 36.66039829072854),
-    glam::Vec2::new(11.8268698636903, 12.006221625181322),
-    glam::Vec2::new(-33.08192904716574, -19.611015142612573),
-    glam::Vec2::new(-46.409618977466195, -9.512491045103399),
-    glam::Vec2::new(-36.063910460930224, -28.639274022373453),
-    glam::Vec2::new(-20.932181878157667, -31.97654524652848),
-    glam::Vec2::new(-28.72479058333578, 42.9054799775039),
-    glam::Vec2::new(-23.828102675327166, -11.088258035243882),
-    glam::Vec2::new(-12.573055213680837, 21.471363508268126),
-    glam::Vec2::new(-9.600609778544293, -36.96664806839588),
-    glam::Vec2::new(-21.318484683473322, -17.97136175448355),
-    glam::Vec2::new(-27.016372873357636, 36.70098316566665),
-    glam::Vec2::new(2.0763823777282964, -43.92509106747539),
-    glam::Vec2::new(-25.828702562194973, 45.064523168432224),
-    glam::Vec2::new(23.87066286427663, 18.976149530940106),
-    glam::Vec2::new(35.433014850884206, -34.19502156086414),
-    glam::Vec2::new(-23.371271147614213, -31.155903956340918),
-    glam::Vec2::new(17.381198810479162, -37.63663639258773),
-    glam::Vec2::new(-20.104824245559087, 46.49261837552774),
-    glam::Vec2::new(42.959611286733384, -36.93751892756958),
-    glam::Vec2::new(-25.328968380852533, -34.91476806869031),
-    glam::Vec2::new(-43.64745826715408, -40.051200791586844),
-    glam::Vec2::new(-16.941936397175215, 29.0779892092548),
-    glam::Vec2::new(-21.7219030467798, 24.406808384885903),
-    glam::Vec2::new(-32.815359597282345, 34.670994493719675),
-    glam::Vec2::new(-3.876517710390012, -16.410907691243022),
-    glam::Vec2::new(31.489825861031854, -17.363199857459623),
-    glam::Vec2::new(-46.34758160288273, -10.265540512916187),
-    glam::Vec2::new(-29.63125182366285, -0.05414939846848599),
-    glam::Vec2::new(-6.222534867281012, -25.6047090028603),
-    glam::Vec2::new(18.880504722554456, 6.7694347908520465),
-    glam::Vec2::new(20.256418892358365, -31.512797375890322),
-    glam::Vec2::new(30.496205733916888, -23.879467930271485),
-    glam::Vec2::new(15.238272969232316, -31.51003572791919),
-    glam::Vec2::new(28.44568524182792, -10.585100771303356),
-    glam::Vec2::new(-36.936317666352224, 37.46946090025241),
-    glam::Vec2::new(-2.8836162438376007, 12.595559260829749),
-    glam::Vec2::new(0.39824696190816566, -12.13433227573875),
-    glam::Vec2::new(-25.56977075034023, 19.98151616465212),
-    glam::Vec2::new(-18.017859933244495, 4.034220673148447),
-    glam::Vec2::new(-29.521666797320258, -27.2667553843009),
-    glam::Vec2::new(-14.552449425706698, -43.258010754490435),
-    glam::Vec2::new(5.084092766446378, -39.21829284876206),
-    glam::Vec2::new(19.777504824445202, -44.25394722869699),
-    glam::Vec2::new(11.536986981918556, 8.82227726865802),
-    glam::Vec2::new(31.037971151461726, -11.291394310703776),
-    glam::Vec2::new(2.688951614438075, -25.05450613003052),
-    glam::Vec2::new(33.192925216701866, 11.541928396006416),
-    glam::Vec2::new(-5.685521386403871, 25.682304172147703),
-    glam::Vec2::new(21.379300732674487, 25.94867981895117),
-    glam::Vec2::new(26.12340319929507, 29.320121721104137),
-    glam::Vec2::new(-3.9028085496422227, -45.91296995873273),
-    glam::Vec2::new(-5.878794291875636, 7.617025557220211),
-    glam::Vec2::new(12.056847106398317, 40.64585414508065),
-    glam::Vec2::new(-29.032883355196084, -26.367379318811075),
-    glam::Vec2::new(46.60869990559083, -12.660621341896958),
-    glam::Vec2::new(43.265517842679664, -22.962785328368593),
-    glam::Vec2::new(46.51457757850717, 46.031264747360424),
-    glam::Vec2::new(6.032901734172901, 42.729102383384316),
-    glam::Vec2::new(-37.381581510329724, -40.50230423951367),
-    glam::Vec2::new(25.821243391482295, 26.428933143553444),
-    glam::Vec2::new(12.743962409067311, -24.167395342859752),
-    glam::Vec2::new(-10.402744390399079, 26.601629773526607),
-    glam::Vec2::new(24.154065229496947, 41.62789425134857),
-    glam::Vec2::new(42.142975056213714, 42.228564706193666),
-    glam::Vec2::new(-14.043709104944865, 40.576258994678085),
-    glam::Vec2::new(45.363919951112216, -0.7224549284427455),
-    glam::Vec2::new(-38.120494809646424, 23.418418771128504),
-    glam::Vec2::new(8.311415975686621, -1.198489516042726),
-    glam::Vec2::new(-40.86456200626991, 21.58234361058239),
-    glam::Vec2::new(20.995261565338335, -21.821789621403298),
-    glam::Vec2::new(-39.19176883806685, 29.370891799025348),
-    glam::Vec2::new(16.474187521055256, 34.15800102099248),
-    glam::Vec2::new(1.3271866658165334, -37.6277829172805),
-    glam::Vec2::new(22.73482851431915, 24.007795464529703),
-    glam::Vec2::new(4.170946582722074, 30.53692188003356),
-    glam::Vec2::new(-40.96998573099675, -44.58658122909628),
-    glam::Vec2::new(-15.71273933697701, 21.362021710770268),
-    glam::Vec2::new(38.318509368868966, 11.233931245517267),
-    glam::Vec2::new(14.133730967803727, 41.31092617501651),
-    glam::Vec2::new(46.069090700733206, 37.75732640494331),
-    glam::Vec2::new(45.238028439011366, 25.641827671328514),
-    glam::Vec2::new(-0.9078255659594292, 46.88065469742662),
-    glam::Vec2::new(-9.996864225727876, -15.800001028805848),
-    glam::Vec2::new(29.63567795082347, 35.582688641564665),
-    glam::Vec2::new(15.330799643678196, 27.372136208332957),
-    glam::Vec2::new(-33.49374925001522, -40.861345049371415),
-    glam::Vec2::new(31.91812584517793, -29.563316179967916),
-    glam::Vec2::new(-5.894153287120611, -11.080854129087566),
-    glam::Vec2::new(-25.16602168006189, 29.67217016997148),
-    glam::Vec2::new(-34.0539210629473, -40.6566312298508),
-    glam::Vec2::new(35.36240234245935, -30.68441504351222),
-    glam::Vec2::new(22.392399389032548, -36.81016588151426),
-    glam::Vec2::new(-32.5443501083422, 29.18419109584081),
-    glam::Vec2::new(5.995479331279442, 37.263970385103),
-    glam::Vec2::new(0.6241183309363285, -13.667256512826965),
-    glam::Vec2::new(24.17244159519106, 1.534724149807484),
-    glam::Vec2::new(-29.28396793201935, 40.27702963353179),
-    glam::Vec2::new(-3.995671669509983, 6.376897759107411),
-    glam::Vec2::new(30.506471746360422, 14.000861649737633),
-    glam::Vec2::new(-30.084348019214882, -12.665829397386862),
-    glam::Vec2::new(-7.911412117312596, 15.61067088917003),
-    glam::Vec2::new(-39.4331090103622, 12.99181568362338),
-    glam::Vec2::new(-46.626631522922956, -23.417028344592026),
-    glam::Vec2::new(0.8328433305161291, 44.00009867242622),
-    glam::Vec2::new(-22.391480312540537, 39.24922659185646),
-    glam::Vec2::new(17.659034848474832, 46.8317834374303),
-    glam::Vec2::new(-44.75847786351424, 6.800469225189441),
-    glam::Vec2::new(-1.0021299477330543, -34.25022272826349),
-    glam::Vec2::new(-19.352889846850797, 11.167849433077965),
-    glam::Vec2::new(-22.817411727953044, -42.65186168881485),
-    glam::Vec2::new(-8.205366200382757, -38.36005036955677),
-    glam::Vec2::new(-46.93198461689954, -33.11638880144609),
-    glam::Vec2::new(28.721359178794007, -39.03141624693327),
-    glam::Vec2::new(-43.81315693423482, -26.06775962238357),
-    glam::Vec2::new(18.139603477800485, -32.23256808791829),
-    glam::Vec2::new(-8.011443645344611, -19.254633630915894),
-    glam::Vec2::new(40.348810443856856, 36.65661220616269),
-    glam::Vec2::new(-32.732046731825, 29.93086080936075),
-    glam::Vec2::new(25.648930290637466, 1.4764642814472362),
-    glam::Vec2::new(-26.897330818071428, 34.59157102041681),
-    glam::Vec2::new(-27.97950741564864, 22.728563489897432),
-    glam::Vec2::new(42.5273938925672, -14.636121882373407),
-    glam::Vec2::new(-13.122238762110872, -0.34003986459591506),
-    glam::Vec2::new(39.04458355219319, -31.883944574677383),
-    glam::Vec2::new(25.341518656176838, 41.926036829258535),
-    glam::Vec2::new(8.914361667031683, -11.650953380455698),
-    glam::Vec2::new(26.02994556040915, 29.405711323294756),
-    glam::Vec2::new(-17.81408903792203, -46.68322496859222),
-    glam::Vec2::new(-8.59969977856224, -4.491810124498866),
-    glam::Vec2::new(24.15134927480631, 7.144793845359965),
-    glam::Vec2::new(26.43492959263823, -30.505020903469678),
-    glam::Vec2::new(45.44009327344605, -1.7771145950888458),
-    glam::Vec2::new(-0.42235357025010356, 24.14412279047582),
-    glam::Vec2::new(44.64694707568917, 44.19742762679794),
-    glam::Vec2::new(-0.1872083797467321, 1.352275561916794),
-    glam::Vec2::new(-0.9012038206794746, 22.02774857059635),
-    glam::Vec2::new(-38.002402528479166, -26.85664611475854),
-    glam::Vec2::new(-16.574490757719865, 36.362602095181664),
-    glam::Vec2::new(7.672846431806185, 19.623917625876917),
-    glam::Vec2::new(-30.400268758523115, 15.38321733065258),
-    glam::Vec2::new(40.38253365064381, -22.529672969759197),
-];
-static WALL_LOCATIONS: [glam::Vec2; 101] = [
-    glam::Vec2::new(-43.24182006985064, 37.02130316244868),
-    glam::Vec2::new(-19.57081002728108, 0.5046357786797826),
-    glam::Vec2::new(38.23447366331598, -38.86666787947049),
-    glam::Vec2::new(-6.711219430147191, -44.255892341989785),
-    glam::Vec2::new(-12.365574053587586, -6.700611294541883),
-    glam::Vec2::new(-15.673827451480442, -1.312038797658731),
-    glam::Vec2::new(-7.703075369774032, -41.43800538507749),
-    glam::Vec2::new(-17.610129138274214, -16.112118311555772),
-    glam::Vec2::new(37.22413428196374, -40.413874697570904),
-    glam::Vec2::new(9.850116784938079, 37.96665074797123),
-    glam::Vec2::new(-5.471904888307466, 15.036286922423168),
-    glam::Vec2::new(-39.776400434096765, -45.532860432349175),
-    glam::Vec2::new(10.85039826102731, 12.596318056091),
-    glam::Vec2::new(44.83268497722997, -10.441228071229965),
-    glam::Vec2::new(10.989823452129254, -26.44453593532225),
-    glam::Vec2::new(16.21868031772715, -29.40553651312599),
-    glam::Vec2::new(7.686746149559425, -12.264007481497531),
-    glam::Vec2::new(-31.754434594077516, 17.089489861049504),
-    glam::Vec2::new(-43.87963021604549, 20.698098854164876),
-    glam::Vec2::new(-12.964413577233216, -10.399441253553327),
-    glam::Vec2::new(10.964413577233216, -0.25),
-    glam::Vec2::new(-50.0, -50.0),
-    glam::Vec2::new(-50.0, -50.0),
-    glam::Vec2::new(50.0, -50.0),
-    glam::Vec2::new(-50.0, 50.0),
-    glam::Vec2::new(-50.0, -45.0),
-    glam::Vec2::new(-45.0, -50.0),
-    glam::Vec2::new(50.0, -45.0),
-    glam::Vec2::new(-45.0, 50.0),
-    glam::Vec2::new(-50.0, -40.0),
-    glam::Vec2::new(-40.0, -50.0),
-    glam::Vec2::new(50.0, -40.0),
-    glam::Vec2::new(-40.0, 50.0),
-    glam::Vec2::new(-50.0, -35.0),
-    glam::Vec2::new(-35.0, -50.0),
-    glam::Vec2::new(50.0, -35.0),
-    glam::Vec2::new(-35.0, 50.0),
-    glam::Vec2::new(-50.0, -30.0),
-    glam::Vec2::new(-30.0, -50.0),
-    glam::Vec2::new(50.0, -30.0),
-    glam::Vec2::new(-30.0, 50.0),
-    glam::Vec2::new(-50.0, -25.0),
-    glam::Vec2::new(-25.0, -50.0),
-    glam::Vec2::new(50.0, -25.0),
-    glam::Vec2::new(-25.0, 50.0),
-    glam::Vec2::new(-50.0, -20.0),
-    glam::Vec2::new(-20.0, -50.0),
-    glam::Vec2::new(50.0, -20.0),
-    glam::Vec2::new(-20.0, 50.0),
-    glam::Vec2::new(-50.0, -15.0),
-    glam::Vec2::new(-15.0, -50.0),
-    glam::Vec2::new(50.0, -15.0),
-    glam::Vec2::new(-15.0, 50.0),
-    glam::Vec2::new(-50.0, -10.0),
-    glam::Vec2::new(-10.0, -50.0),
-    glam::Vec2::new(50.0, -10.0),
-    glam::Vec2::new(-10.0, 50.0),
-    glam::Vec2::new(-50.0, -5.0),
-    glam::Vec2::new(-5.0, -50.0),
-    glam::Vec2::new(50.0, -5.0),
-    glam::Vec2::new(-5.0, 50.0),
-    glam::Vec2::new(-50.0, 0.0),
-    glam::Vec2::new(0.0, -50.0),
-    glam::Vec2::new(50.0, 0.0),
-    glam::Vec2::new(0.0, 50.0),
-    glam::Vec2::new(-50.0, 5.0),
-    glam::Vec2::new(5.0, -50.0),
-    glam::Vec2::new(50.0, 5.0),
-    glam::Vec2::new(5.0, 50.0),
-    glam::Vec2::new(-50.0, 10.0),
-    glam::Vec2::new(10.0, -50.0),
-    glam::Vec2::new(50.0, 10.0),
-    glam::Vec2::new(10.0, 50.0),
-    glam::Vec2::new(-50.0, 15.0),
-    glam::Vec2::new(15.0, -50.0),
-    glam::Vec2::new(50.0, 15.0),
-    glam::Vec2::new(15.0, 50.0),
-    glam::Vec2::new(-50.0, 20.0),
-    glam::Vec2::new(20.0, -50.0),
-    glam::Vec2::new(50.0, 20.0),
-    glam::Vec2::new(20.0, 50.0),
-    glam::Vec2::new(-50.0, 25.0),
-    glam::Vec2::new(25.0, -50.0),
-    glam::Vec2::new(50.0, 25.0),
-    glam::Vec2::new(25.0, 50.0),
-    glam::Vec2::new(-50.0, 30.0),
-    glam::Vec2::new(30.0, -50.0),
-    glam::Vec2::new(50.0, 30.0),
-    glam::Vec2::new(30.0, 50.0),
-    glam::Vec2::new(-50.0, 35.0),
-    glam::Vec2::new(35.0, -50.0),
-    glam::Vec2::new(50.0, 35.0),
-    glam::Vec2::new(35.0, 50.0),
-    glam::Vec2::new(-50.0, 40.0),
-    glam::Vec2::new(40.0, -50.0),
-    glam::Vec2::new(50.0, 40.0),
-    glam::Vec2::new(40.0, 50.0),
-    glam::Vec2::new(-50.0, 45.0),
-    glam::Vec2::new(45.0, -50.0),
-    glam::Vec2::new(50.0, 45.0),
-    glam::Vec2::new(45.0, 50.0),
-];
-
 fn main() -> Result<(), GameError> {
     let mut rng = rand::rng();
     let population = evolution_rust::Population::new(100, 10, &mut rng);
+
+    let wall_locations = State::create_random_wall_locations();
+    let food_locations = State::create_random_food_locations(&wall_locations);
 
     let state = if std::path::Path::new("save.cbor").exists() {
         let file = std::fs::File::open("save.cbor")?;
@@ -657,7 +462,9 @@ fn main() -> Result<(), GameError> {
             round,
             best_fitness,
             steps: 0,
-            food_eaten: FOOD_LOCATIONS.iter().map(|_| 0).collect(),
+            food_eaten: vec![0; NUMBER_OF_FOOD_LOCATIONS],
+            wall_locations,
+            food_locations,
         }
     } else {
         State {
@@ -669,14 +476,17 @@ fn main() -> Result<(), GameError> {
             steps: 0,
             round: 0,
             best_fitness: 0.0,
-            food_eaten: FOOD_LOCATIONS.iter().map(|_| 0).collect(),
+            food_eaten: vec![0; NUMBER_OF_FOOD_LOCATIONS],
+
+            wall_locations,
+            food_locations,
         }
     };
     let cb = ggez::ContextBuilder::new("rust_evolution", "mousetail")
         .window_setup(WindowSetup::default().title("Rust Evolution"))
         .window_mode(conf::WindowMode::default().dimensions(1536.0, 1024.0));
     let (ctx, event_loop) = cb.build().unwrap();
-    event::run(ctx, event_loop, state);
+    event::run(ctx, event_loop, state)?;
 
     Ok(())
 }
