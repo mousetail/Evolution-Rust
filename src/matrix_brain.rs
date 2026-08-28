@@ -25,9 +25,9 @@ pub(crate) fn matrix_difference<const INPUT: usize, const OUTPUT: usize>(
 
 #[derive(Clone, Copy, PartialEq, Debug, Serialize, Deserialize)]
 pub struct Layer<const SIZE: usize> {
-    matrix: EvolutionMatrix<SIZE, SIZE>,
-    enabled: bool,
-    activation_strengh: f32,
+    pub matrix: EvolutionMatrix<SIZE, SIZE>,
+    pub enabled: bool,
+    pub activation_strengh: f32,
 }
 
 impl<const SIZE: usize> Layer<SIZE> {
@@ -60,12 +60,12 @@ pub struct MatrixBrain<
     const OUTPUTS: usize,
     const NODES_FOR_HIDDEN_LAYER: usize,
 > {
-    input_matrix: EvolutionMatrix<INPUTS, NODES_FOR_HIDDEN_LAYER>,
-    input_activation_strength: f32,
+    pub input_matrix: EvolutionMatrix<INPUTS, NODES_FOR_HIDDEN_LAYER>,
+    pub input_activation_strength: f32,
 
     #[serde(with = "serde_arrays")]
-    matricies: [Layer<NODES_FOR_HIDDEN_LAYER>; HIDDEN_LAYERS],
-    output_matrix: EvolutionMatrix<NODES_FOR_HIDDEN_LAYER, OUTPUTS>,
+    pub matricies: [Layer<NODES_FOR_HIDDEN_LAYER>; HIDDEN_LAYERS],
+    pub output_matrix: EvolutionMatrix<NODES_FOR_HIDDEN_LAYER, OUTPUTS>,
 }
 
 fn relu<const SIZE: usize>(
@@ -83,11 +83,15 @@ fn random_matrix<const INPUT: usize, const OUTPUT: usize>(
     rng: &mut impl Rng,
 ) -> EvolutionMatrix<INPUT, OUTPUT> {
     let mut matrix = EvolutionMatrix::<INPUT, OUTPUT>::zeros();
+    for i in 0..INPUT {
+        let j = rng.random_range(0..OUTPUT);
+        matrix[(i, j)] = rng.random_range(-1.0..1.0);
+    }
 
     for i in 0..INPUT {
         for j in 0..OUTPUT {
             if rng.random_bool(0.25) {
-                matrix[(i, j)] = rng.random_range(-1.0..1.0);
+                matrix[(i, j)] = rng.random_range(-0.25..0.25);
             }
         }
     }
@@ -133,7 +137,34 @@ impl<const INPUTS: usize, const LAYERS: usize, const OUTPUTS: usize, const SUBLA
     Evolvable for MatrixBrain<INPUTS, LAYERS, OUTPUTS, SUBLAYERS>
 {
     fn mutate(&mut self, rng: &mut impl Rng) {
-        let layer = rng.random_range(0..=LAYERS + 1);
+        let mut layer = rng.random_range(0..=LAYERS + 1);
+        while layer != 0 && layer != LAYERS + 1 && self.matricies[layer - 1].enabled == false {
+            // Activate a random layer
+            if rng.random_bool(0.025) {
+                self.matricies[layer - 1].enabled = true;
+
+                let previous_index = (1..layer - 1)
+                    .filter(|i| self.matricies[*i - 1].enabled)
+                    .map(|i| i + 1)
+                    .next()
+                    .unwrap_or(0);
+
+                let previous_strength = if previous_index == 0 {
+                    &mut self.input_activation_strength
+                } else {
+                    &mut self.matricies[previous_index - 1].activation_strengh
+                };
+                let root = (*previous_strength).sqrt();
+                *previous_strength = root;
+                self.matricies[layer - 1].activation_strengh = root;
+
+                mutate_matrix(&mut self.matricies[layer - 1].matrix, rng);
+
+                return;
+            }
+
+            layer = rng.random_range(0..=LAYERS + 1);
+        }
         if layer == 0 {
             mutate_matrix(&mut self.input_matrix, rng);
         } else if layer == LAYERS + 1 {

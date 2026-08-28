@@ -1,12 +1,15 @@
+use std::f32::consts::PI;
+
+use evolution_rust::{Individual, MatrixBrain};
 use ggez::{
     conf::WindowSetup,
-    graphics::{TextAlign, TextLayout},
+    graphics::{Color, TextAlign, TextLayout},
     *,
 };
 use rand::prelude::*;
 use serde::{Deserialize, Serialize};
 
-type Brain = evolution_rust::Individual<10, 2, 4, 5>;
+type Brain = evolution_rust::Brain<MatrixBrain<10, 2, 4, 5>>;
 
 const NUMBER_OF_FOOD_LOCATIONS: usize = 168;
 const NUMBER_OF_WALL_LOCATIONS: usize = 101;
@@ -32,8 +35,9 @@ const OUTPUT_LABELS: &[&str] = &["forward", "back", "left", "right"];
 
 #[derive(Serialize, Deserialize)]
 struct Spaceship {
-    brain: Brain,
+    brain_index: usize,
     food: Vec<bool>,
+    almost_food: Vec<bool>,
     location: glam::Vec2,
     angle: f32,
     alive: bool,
@@ -48,11 +52,12 @@ impl Spaceship {
     const MASS: f32 = 4.0;
     const MOMENT_OF_INERTIA: f32 = 16.0;
 
-    fn new(brain: Brain) -> Self {
+    fn new(brain_index: usize, angle: f32) -> Self {
         Spaceship {
-            brain,
+            brain_index,
             food: vec![true; NUMBER_OF_FOOD_LOCATIONS],
-            angle: 0.,
+            almost_food: vec![true; NUMBER_OF_FOOD_LOCATIONS],
+            angle,
             location: glam::Vec2::new(0., 0.),
             alive: true,
             velocity: glam::Vec2::new(0., 0.),
@@ -79,15 +84,40 @@ impl Spaceship {
         self.food[food_index] = false;
     }
 }
+
+fn weight_to_color(weight: f32) -> graphics::Color {
+    let value = weight.abs();
+    let value_u8 = (value * 127.0) as u8;
+    if weight > 0.0 {
+        graphics::Color::from_rgb(
+            128u8.saturating_sub(value_u8),
+            128u8.saturating_add(value_u8),
+            128u8.saturating_sub(value_u8),
+        )
+    } else {
+        graphics::Color::from_rgb(
+            128u8.saturating_add(value_u8),
+            128u8.saturating_sub(value_u8),
+            128u8.saturating_sub(value_u8),
+        )
+    }
+}
+
 struct State {
-    population: Vec<Spaceship>,
+    spaceships: Vec<Spaceship>,
+    brains: Vec<Brain>,
     steps: u32,
     round: u32,
     best_fitness: f32,
     food_eaten: Vec<u32>,
 
+    persistant_info: evolution_rust::PersistentInfo,
+
     wall_locations: Vec<glam::Vec2>,
     food_locations: Vec<glam::Vec2>,
+
+    last_input_weights: [f32; 10],
+    last_output_weights: [f32; 4],
 }
 
 impl State {
@@ -101,22 +131,7 @@ impl State {
         for i in 0..WIDTH {
             for j in 0..HEIGHT {
                 if matrix[(i, j)] != 0.0 {
-                    let value = matrix[(i, j)].abs();
-                    let value_u8 = ((value * 127.0) as u8);
-                    let color = if matrix[(i, j)] > 0.0 {
-                        graphics::Color::from_rgb(
-                            128u8.saturating_sub(value_u8),
-                            128u8.saturating_add(value_u8),
-                            128u8.saturating_sub(value_u8),
-                        )
-                    } else {
-                        graphics::Color::from_rgb(
-                            128u8.saturating_add(value_u8),
-                            128u8.saturating_sub(value_u8),
-                            128u8.saturating_sub(value_u8),
-                        )
-                    };
-
+                    let color = weight_to_color(matrix[(i, j)]);
                     let line = graphics::Mesh::new_line(
                         ctx,
                         &[
@@ -149,6 +164,8 @@ impl State {
         brain: &Brain,
         ctx: &mut Context,
         rect: graphics::Rect,
+        last_input_weights: &[f32; 10],
+        last_output_weights: &[f32; 4],
     ) -> GameResult {
         let circle = graphics::Mesh::new_circle(
             ctx,
@@ -212,20 +229,42 @@ impl State {
 
             if layer == 0 {
             } else if layer == 1 {
-                Self::draw_matrix(brain.input_matrix, canvas, ctx, layer + 1, rect)?;
+                Self::draw_matrix(brain.get_inner().input_matrix, canvas, ctx, layer + 1, rect)?;
             } else if layer == 4 {
-                Self::draw_matrix(brain.output_matrix, canvas, ctx, layer + 1, rect)?;
+                Self::draw_matrix(
+                    brain.get_inner().output_matrix,
+                    canvas,
+                    ctx,
+                    layer + 1,
+                    rect,
+                )?;
             } else {
-                Self::draw_matrix(brain.matricies[layer - 2], canvas, ctx, layer + 1, rect)?;
+                Self::draw_matrix(
+                    brain.get_inner().matricies[layer - 2].matrix,
+                    canvas,
+                    ctx,
+                    layer + 1,
+                    rect,
+                )?;
             }
 
             for node in 0..layer_size {
+                let color = if layer == 0 {
+                    weight_to_color(last_input_weights[node])
+                } else if layer == 4 {
+                    weight_to_color(last_output_weights[node])
+                } else {
+                    Color::WHITE
+                };
+
                 canvas.draw(
                     &circle,
-                    graphics::DrawParam::new().dest(glam::Vec2::new(
-                        rect.x + (node as f32 + 0.5) * rect.w / layer_size as f32,
-                        y,
-                    )),
+                    graphics::DrawParam::new()
+                        .dest(glam::Vec2::new(
+                            rect.x + (node as f32 + 0.5) * rect.w / layer_size as f32,
+                            y,
+                        ))
+                        .color(color),
                 )
             }
         }
@@ -358,26 +397,34 @@ impl ggez::event::EventHandler for State {
         self.steps += 1;
 
         let mut living_ships = 0;
+        let mut weights_seen = false;
 
-        for ship in self.population.iter_mut() {
+        for ship in self.spaceships.iter_mut() {
             if !ship.alive {
                 continue;
             }
 
-            let forces = ship.brain.evaluate(Self::calculate_inputs(
-                ship,
-                &self.food_locations,
-                &self.wall_locations,
-            ));
+            let inputs = Self::calculate_inputs(ship, &self.food_locations, &self.wall_locations);
+
+            if !weights_seen {
+                self.last_input_weights = inputs
+            }
+
+            let forces = self.brains[ship.brain_index].get_inner().evaluate(inputs);
+
+            if !weights_seen {
+                self.last_output_weights = forces;
+                weights_seen = true;
+            }
 
             ship.angular_velocity *= 0.9;
             ship.velocity *= 0.99;
 
             for (force, (force_direction, position)) in forces.into_iter().zip([
                 (glam::Vec2::new(1., 0.), glam::Vec2::new(0., 0.)),
-                (glam::Vec2::new(-1., 0.), glam::Vec2::new(0., 0.)),
-                (glam::Vec2::new(-0., -1.), glam::Vec2::new(1., 0.)),
-                (glam::Vec2::new(-0., 1.), glam::Vec2::new(1., 0.)),
+                (glam::Vec2::new(-0.75, 0.), glam::Vec2::new(0., 0.)),
+                (glam::Vec2::new(-0., -0.5), glam::Vec2::new(1., 0.)),
+                (glam::Vec2::new(-0., 0.5), glam::Vec2::new(1., 0.)),
             ]) {
                 ship.apply_force(force * force_direction, position);
             }
@@ -385,7 +432,7 @@ impl ggez::event::EventHandler for State {
             ship.location += ship.velocity;
             ship.angle += ship.angular_velocity;
 
-            if ship.time_last_food_eaten + 400 < self.steps {
+            if ship.time_last_food_eaten + 600 < self.steps {
                 ship.die(self.steps);
                 continue;
             }
@@ -396,6 +443,10 @@ impl ggez::event::EventHandler for State {
                 {
                     ship.eat(index, self.steps);
                     self.food_eaten[index] += 1;
+                } else if ship.almost_food[index]
+                    && ship.location.distance_squared(*food) <= FOOD_RADIUS * FOOD_RADIUS * 4.0
+                {
+                    ship.almost_food[index] = false;
                 }
             }
 
@@ -414,43 +465,60 @@ impl ggez::event::EventHandler for State {
         if living_ships == 0 {
             self.round += 1;
 
-            for ship in self.population.iter_mut() {
-                ship.brain.fitness = ship.food.iter().filter(|&i| !i).count() as f32;
-            }
+            let individuals_with_fitness = std::mem::take(&mut self.brains)
+                .into_iter()
+                .enumerate()
+                .map(|(i, brain)| {
+                    let (count, sum) = self
+                        .spaceships
+                        .iter()
+                        .filter(|k| k.brain_index == i)
+                        .map(|ship| {
+                            ship.food.iter().filter(|&i| !i).count() as f32 * 0.9375
+                                + ship.almost_food.iter().filter(|&i| !i).count() as f32 * 0.0625
+                        })
+                        .fold((0.0, 0.0), |(count, sum), fitness| {
+                            (count + 1.0, sum + fitness)
+                        });
+                    Individual {
+                        brain: brain,
+                        fitness: sum / count,
+                    }
+                })
+                .collect::<Vec<_>>();
 
-            self.best_fitness = self
-                .population
+            self.best_fitness = individuals_with_fitness
                 .iter()
-                .map(|i| i.brain.fitness)
+                .map(|i| i.fitness)
                 .reduce(|a, b| a.max(b))
                 .unwrap_or(0.0);
+
+            let mut rng = rand::rng();
+
+            let population = evolution_rust::mutate(
+                &mut rng,
+                &mut self.persistant_info,
+                individuals_with_fitness,
+            );
 
             let save_file = std::fs::File::create("save.cbor")?;
             ciborium::into_writer(
                 &(
                     self.round,
                     self.best_fitness,
-                    self.population.iter().map(|i| &i.brain).collect::<Vec<_>>(),
+                    &population,
+                    &self.persistant_info,
                 ),
                 save_file,
             )
             .map_err(|err| error::GameError::CustomError(format!("{err:?}")))?;
 
-            let mut population = evolution_rust::Population::new_from_individuals(
-                10,
-                self.population.iter().map(|i| i.brain.clone()).collect(),
-            );
-            population.evolve(&mut rand::rng());
-
-            self.population = population
-                .individuals
-                .into_iter()
-                .map(Spaceship::new)
+            // Extract brains for evolution
+            self.spaceships = (0..population.len())
+                .map(create_ships_for_brain_index)
+                .flatten()
                 .collect();
-            let new_random_angle = rand::rng().random_range(-3.0..3.0);
-            self.population
-                .iter_mut()
-                .for_each(|i| i.angle = new_random_angle);
+            self.brains = population;
 
             // New Round, New Map
             self.wall_locations = State::create_random_wall_locations();
@@ -479,13 +547,13 @@ impl ggez::event::EventHandler for State {
             graphics::Color::WHITE,
         )?;
 
-        for (index, ship) in self.population.iter().enumerate() {
+        for (index, ship) in self.spaceships.iter().enumerate() {
             canvas.draw(
                 &rectangle,
                 graphics::DrawParam::new()
                     .rotation(ship.angle)
                     .dest(ship.location)
-                    .color(if index == 0 {
+                    .color(if index < 3 {
                         graphics::Color::BLUE
                     } else {
                         graphics::Color::WHITE
@@ -497,13 +565,13 @@ impl ggez::event::EventHandler for State {
             ctx,
             graphics::DrawMode::fill(),
             mint::Point2 { x: 0.0, y: 0.0 },
-            1.0,
-            0.025,
+            FOOD_RADIUS,
+            0.045,
             graphics::Color::WHITE,
         )?;
 
         for (index, &food) in self.food_locations.iter().enumerate() {
-            let color = 1.0 - 4.0 * self.food_eaten[index] as f32 / self.population.len() as f32;
+            let color = 1.0 - 4.0 * self.food_eaten[index] as f32 / self.spaceships.len() as f32;
             canvas.draw(
                 &food_circle,
                 graphics::DrawParam::new()
@@ -534,7 +602,7 @@ impl ggez::event::EventHandler for State {
             "Round {}, Best Fitness {}, Alive: {}, fps: {:.1}",
             self.round,
             self.best_fitness,
-            self.population.iter().filter(|s| s.alive).count(),
+            self.spaceships.iter().filter(|s| s.alive).count(),
             ctx.time.fps()
         ));
         text.set_scale(32.0);
@@ -547,9 +615,11 @@ impl ggez::event::EventHandler for State {
 
         Self::draw_network(
             &mut canvas,
-            &self.population[0].brain,
+            &self.brains[0],
             ctx,
             graphics::Rect::new(54.0, -48.0, 42.0, 96.0),
+            &self.last_input_weights,
+            &self.last_output_weights,
         )?;
 
         canvas.finish(ctx)?;
@@ -557,41 +627,68 @@ impl ggez::event::EventHandler for State {
     }
 }
 
+fn create_ships_for_brain_index(brain_index: usize) -> [Spaceship; 3] {
+    [
+        Spaceship::new(brain_index, 0.0),
+        Spaceship::new(brain_index, PI * 2.0 / 3.0),
+        Spaceship::new(brain_index, PI * 4.0 / 3.0),
+    ]
+}
+
 fn main() -> Result<(), GameError> {
     let mut rng = rand::rng();
-    let population = evolution_rust::Population::new(100, 10, &mut rng);
 
     let wall_locations = State::create_random_wall_locations();
     let food_locations = State::create_random_food_locations(&wall_locations);
 
     let state = if std::path::Path::new("save.cbor").exists() {
         let file = std::fs::File::open("save.cbor")?;
-        let (round, best_fitness, population): (u32, f32, Vec<Brain>) = ciborium::from_reader(file)
+        let (round, best_fitness, population, persistant_info): (
+            u32,
+            f32,
+            Vec<Brain>,
+            evolution_rust::PersistentInfo,
+        ) = ciborium::from_reader(file)
             .map_err(|err| GameError::CustomError(format!("{err:?}")))?;
 
         State {
-            population: population.into_iter().map(Spaceship::new).collect(),
+            spaceships: (0..population.len())
+                .map(create_ships_for_brain_index)
+                .flatten()
+                .collect(),
             round,
             best_fitness,
             steps: 0,
             food_eaten: vec![0; NUMBER_OF_FOOD_LOCATIONS],
             wall_locations,
             food_locations,
+            persistant_info,
+            brains: population,
+
+            last_input_weights: [0.0; 10],
+            last_output_weights: [0.0; 4],
         }
     } else {
+        let (persistant_info, population): (evolution_rust::PersistentInfo, Vec<Brain>) =
+            evolution_rust::initialize_random_population(100, 10, 10, &mut rng);
+
         State {
-            population: population
-                .individuals
-                .into_iter()
-                .map(Spaceship::new)
+            spaceships: (0..population.len())
+                .map(create_ships_for_brain_index)
+                .flatten()
                 .collect(),
+            brains: population,
             steps: 0,
             round: 0,
             best_fitness: 0.0,
             food_eaten: vec![0; NUMBER_OF_FOOD_LOCATIONS],
+            persistant_info,
 
             wall_locations,
             food_locations,
+
+            last_input_weights: [0.0; 10],
+            last_output_weights: [0.0; 4],
         }
     };
     let cb = ggez::ContextBuilder::new("rust_evolution", "mousetail")

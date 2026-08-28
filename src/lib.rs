@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::ordered_f32::OrderedF32;
 pub use brain::Brain;
-pub use matrix_brain::MatrixBrain;
+pub use matrix_brain::{EvolutionMatrix, MatrixBrain};
 
 #[derive(Clone, PartialEq, Debug, Serialize, Deserialize, Copy, Ord, PartialOrd, Eq, Hash)]
 pub struct SpeciesId(u64);
@@ -30,6 +30,7 @@ pub struct Individual<T: Evolvable> {
     pub fitness: f32,
 }
 
+#[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
 pub struct PersistentInfo {
     max_size: usize,
     max_species: usize,
@@ -68,7 +69,7 @@ pub fn mutate<T: Evolvable>(
     mut individuals: Vec<Individual<T>>,
 ) -> Vec<Brain<T>> {
     persistant_info.round_number += 1;
-    individuals.sort_by(|i, j| (-i.fitness).total_cmp(&-j.fitness));
+    individuals.sort_by_key(|i| OrderedF32(-i.fitness));
     let mut species_map: HashMap<SpeciesId, Vec<Individual<T>>> = HashMap::new();
     for individual in individuals {
         species_map
@@ -83,6 +84,7 @@ pub fn mutate<T: Evolvable>(
         persistant_info.round_number % persistant_info.mass_extinction_timing == 0;
 
     if is_mass_extinction {
+        species.sort_by_key(|s| OrderedF32(-s.1[0].fitness));
         species.truncate(persistant_info.max_species / 2);
 
         let mut new_species = vec![];

@@ -1,14 +1,15 @@
-use evolution_rust::{Individual, Population};
+use evolution_rust::{Brain, Individual, MatrixBrain, initialize_random_population, mutate};
 use serde_json;
 use std::io::Write;
 
 fn main() {
     let mut rng = rand::rng();
-    let mut population: Population<4, 1, 1, 4> = Population::new(100, 20, &mut rng);
+    let (mut persistant_info, mut population): (_, Vec<Brain<MatrixBrain<4, 1, 1, 4>>>) =
+        initialize_random_population(100, 10, 10, &mut rng);
 
-    let mut champions: Vec<Individual<4, 1, 1, 4>> = Vec::new();
+    let mut champions: Vec<Individual<MatrixBrain<4, 1, 1, 4>>> = Vec::new();
 
-    let math_problems = vec![
+    let math_problems = [
         ([0.0, 0.0, 0.0, 1.0], 0.0),
         ([1.0, 0.0, 0.0, 1.0], 1.0),
         ([0.0, 1.0, 0.0, 1.0], 1.0),
@@ -18,21 +19,31 @@ fn main() {
     ];
 
     for i in 0..1600 {
-        for individual in population.individuals.iter_mut() {
-            for (math_problem, solution) in math_problems.iter() {
-                individual.fitness -=
-                    (individual.evaluate(math_problem.clone())[0] - solution).powi(2);
-            }
-        }
+        let mut individuals = population
+            .into_iter()
+            .map(|i| Individual {
+                fitness: math_problems
+                    .iter()
+                    .map(|(input, solution)| {
+                        -(i.get_inner().evaluate(*input)[0] - solution).powi(2)
+                    })
+                    .sum::<f32>(),
+
+                brain: i,
+            })
+            .collect::<Vec<_>>();
+
+        individuals.sort_by(|a, b| f32::total_cmp(&a.fitness, &b.fitness));
 
         if i % 4 == 0 {
-            champions.push(population.individuals[0].clone());
+            champions.push(individuals[0].clone());
             println!(
                 "Generation {i:?} current fitness: {:?}",
-                population.individuals[0].fitness
+                individuals[0].fitness
             );
         }
-        population.evolve(&mut rng);
+
+        population = mutate(&mut rng, &mut persistant_info, individuals);
     }
 
     let string = serde_json::to_string_pretty(&champions).unwrap();
