@@ -13,15 +13,15 @@ pub type EvolutionMatrix<const INPUT: usize, const OUTPUT: usize> = nalgebra::Ma
 #[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
 pub struct Individual<
     const INPUTS: usize,
-    const LAYERS: usize,
+    const HIDDEN_LAYERS: usize,
     const OUTPUTS: usize,
-    const SUBLAYERS: usize,
+    const NODES_FOR_HIDDEN_LAYER: usize,
 > {
-    pub input_matrix: EvolutionMatrix<INPUTS, SUBLAYERS>,
+    pub input_matrix: EvolutionMatrix<INPUTS, NODES_FOR_HIDDEN_LAYER>,
 
     #[serde(with = "serde_arrays")]
-    pub matricies: [EvolutionMatrix<SUBLAYERS, SUBLAYERS>; LAYERS],
-    pub output_matrix: EvolutionMatrix<SUBLAYERS, OUTPUTS>,
+    pub matricies: [EvolutionMatrix<NODES_FOR_HIDDEN_LAYER, NODES_FOR_HIDDEN_LAYER>; HIDDEN_LAYERS],
+    pub output_matrix: EvolutionMatrix<NODES_FOR_HIDDEN_LAYER, OUTPUTS>,
     pub fitness: f32,
 }
 

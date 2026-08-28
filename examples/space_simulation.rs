@@ -1,14 +1,34 @@
-use ggez::{conf::WindowSetup, *};
+use ggez::{
+    conf::WindowSetup,
+    graphics::{TextAlign, TextLayout},
+    *,
+};
 use rand::prelude::*;
 use serde::{Deserialize, Serialize};
 
-type Brain = evolution_rust::Individual<10, 2, 6, 5>;
+type Brain = evolution_rust::Individual<10, 2, 4, 5>;
 
 const NUMBER_OF_FOOD_LOCATIONS: usize = 168;
 const NUMBER_OF_WALL_LOCATIONS: usize = 101;
 const ARENA_SIZE: f32 = 50.0;
 const WALL_RADIUS: f32 = 3.0;
 const FOOD_RADIUS: f32 = 0.5;
+const NUMBER_OF_LAYERS: usize = 5;
+
+const INPUT_LABELS: &[&str] = &[
+    "food",
+    "food v delta",
+    "food h delta",
+    "v velocity",
+    "h velocity",
+    "wall",
+    "wall v delta",
+    "wall h delta",
+    "angular velocity",
+    "bias",
+];
+
+const OUTPUT_LABELS: &[&str] = &["forward", "back", "left", "right"];
 
 #[derive(Serialize, Deserialize)]
 struct Spaceship {
@@ -19,6 +39,9 @@ struct Spaceship {
     alive: bool,
     velocity: glam::Vec2,
     angular_velocity: f32,
+
+    time_alive: u32,
+    time_last_food_eaten: u32,
 }
 
 impl Spaceship {
@@ -34,6 +57,9 @@ impl Spaceship {
             alive: true,
             velocity: glam::Vec2::new(0., 0.),
             angular_velocity: 0.,
+
+            time_alive: 0,
+            time_last_food_eaten: 0,
         }
     }
 
@@ -41,6 +67,16 @@ impl Spaceship {
         self.angular_velocity +=
             glam::Vec2::new(position.y, position.x).dot(force) / Self::MOMENT_OF_INERTIA;
         self.velocity += force.rotate(glam::Vec2::from_angle(self.angle)) / Self::MASS;
+    }
+
+    fn die(&mut self, time: u32) {
+        self.alive = false;
+        self.time_alive = time;
+    }
+
+    fn eat(&mut self, food_index: usize, time: u32) {
+        self.time_last_food_eaten = time;
+        self.food[food_index] = false;
     }
 }
 struct State {
@@ -66,23 +102,35 @@ impl State {
             for j in 0..HEIGHT {
                 if matrix[(i, j)] != 0.0 {
                     let value = matrix[(i, j)].abs();
-                    let value_u8 = ((value * 127.0) as u8).min(127);
+                    let value_u8 = ((value * 127.0) as u8);
                     let color = if matrix[(i, j)] > 0.0 {
-                        graphics::Color::from_rgb(128 - value_u8, 128 + value_u8, 128 - value_u8)
+                        graphics::Color::from_rgb(
+                            128u8.saturating_sub(value_u8),
+                            128u8.saturating_add(value_u8),
+                            128u8.saturating_sub(value_u8),
+                        )
                     } else {
-                        graphics::Color::from_rgb(128, 128 - value_u8, 128 - value_u8)
+                        graphics::Color::from_rgb(
+                            128u8.saturating_add(value_u8),
+                            128u8.saturating_sub(value_u8),
+                            128u8.saturating_sub(value_u8),
+                        )
                     };
 
                     let line = graphics::Mesh::new_line(
                         ctx,
                         &[
                             glam::Vec2::new(
-                                rect.x + rect.w * i as f32 / WIDTH as f32,
-                                rect.y + (starting_height as f32 - 1.0) * rect.h / 5.0,
+                                rect.x + rect.w * (i as f32 + 0.5) / WIDTH as f32,
+                                rect.y
+                                    + (starting_height as f32 - 1.0) * rect.h
+                                        / (NUMBER_OF_LAYERS + 2) as f32,
                             ),
                             glam::Vec2::new(
-                                rect.x + rect.w * j as f32 / HEIGHT as f32,
-                                rect.y + starting_height as f32 * rect.h / 5.0,
+                                rect.x + rect.w * (j as f32 + 0.5) / HEIGHT as f32,
+                                rect.y
+                                    + starting_height as f32 * rect.h
+                                        / (NUMBER_OF_LAYERS + 2) as f32,
                             ),
                         ],
                         0.25,
@@ -111,37 +159,74 @@ impl State {
             graphics::Color::WHITE,
         )?;
 
+        for (i, &label) in INPUT_LABELS.iter().enumerate() {
+            let mut text = graphics::Text::new(label);
+            text.set_scale(16.0);
+            text.set_layout(TextLayout {
+                h_align: TextAlign::End,
+                v_align: TextAlign::Middle,
+            });
+            canvas.draw(
+                &text,
+                graphics::DrawParam::default()
+                    .scale(glam::Vec2::new(0.1, 0.1))
+                    .rotation(std::f32::consts::FRAC_PI_2)
+                    .dest(glam::Vec2::new(
+                        rect.x + (i as f32 + 0.5) * rect.w / INPUT_LABELS.len() as f32,
+                        rect.y + rect.h / (NUMBER_OF_LAYERS + 2) as f32 - 1.5,
+                    )),
+            );
+        }
+
+        for (i, &label) in OUTPUT_LABELS.iter().enumerate() {
+            let mut text = graphics::Text::new(label);
+            text.set_layout(TextLayout {
+                h_align: TextAlign::Begin,
+                v_align: TextAlign::Middle,
+            });
+            text.set_scale(16.0);
+            canvas.draw(
+                &text,
+                graphics::DrawParam::default()
+                    .scale(glam::Vec2::new(0.1, 0.1))
+                    .rotation(std::f32::consts::FRAC_PI_2)
+                    .dest(glam::Vec2::new(
+                        rect.x + (i as f32 + 0.5) * rect.w / OUTPUT_LABELS.len() as f32,
+                        rect.y
+                            + rect.h * (NUMBER_OF_LAYERS) as f32 / (NUMBER_OF_LAYERS + 2) as f32
+                            + 1.5,
+                    )),
+            );
+        }
+
         for layer in 0..5 {
             let layer_size = if layer == 0 {
                 10
             } else if layer == 4 {
-                6
+                4
             } else {
                 5
             };
 
-            let y = rect.y + layer as f32 * rect.h / 5.0;
+            let y = rect.y + (layer + 1) as f32 * rect.h / (NUMBER_OF_LAYERS + 2) as f32;
+
+            if layer == 0 {
+            } else if layer == 1 {
+                Self::draw_matrix(brain.input_matrix, canvas, ctx, layer + 1, rect)?;
+            } else if layer == 4 {
+                Self::draw_matrix(brain.output_matrix, canvas, ctx, layer + 1, rect)?;
+            } else {
+                Self::draw_matrix(brain.matricies[layer - 2], canvas, ctx, layer + 1, rect)?;
+            }
 
             for node in 0..layer_size {
                 canvas.draw(
                     &circle,
                     graphics::DrawParam::new().dest(glam::Vec2::new(
-                        rect.x + node as f32 * rect.w / layer_size as f32,
+                        rect.x + (node as f32 + 0.5) * rect.w / layer_size as f32,
                         y,
                     )),
                 )
-            }
-
-            if layer == 0 {
-                continue;
-            };
-
-            if layer == 1 {
-                Self::draw_matrix(brain.input_matrix, canvas, ctx, layer, rect)?;
-            } else if layer == 4 {
-                Self::draw_matrix(brain.output_matrix, canvas, ctx, layer, rect)?;
-            } else {
-                Self::draw_matrix(brain.matricies[layer - 2], canvas, ctx, layer, rect)?;
             }
         }
 
@@ -156,7 +241,7 @@ impl State {
         while x < ARENA_SIZE {
             wall_locations.push(glam::Vec2::new(x, -ARENA_SIZE));
             wall_locations.push(glam::Vec2::new(x, ARENA_SIZE));
-            if (x != 0.0 && x != ARENA_SIZE * 2.0) {
+            if x != 0.0 && x != ARENA_SIZE * 2.0 {
                 wall_locations.push(glam::Vec2::new(-ARENA_SIZE, x));
                 wall_locations.push(glam::Vec2::new(ARENA_SIZE, x));
             }
@@ -210,6 +295,62 @@ impl State {
         }
         food_locations
     }
+
+    fn calculate_inputs(
+        ship: &Spaceship,
+        food_locations: &[glam::Vec2],
+        wall_locations: &[glam::Vec2],
+    ) -> [f32; 10] {
+        let facing_direction = glam::Vec2::new(ship.angle.cos(), ship.angle.sin());
+
+        let mut greens = 0.0;
+        let mut greens_delta = 0.0;
+        let mut horizontal_green_deta: f32 = 0.0;
+        let mut reds = 0.0;
+        let mut reds_delta = 0.0;
+
+        let mut horizontal_red_delta = 0.0;
+
+        for (index, food) in food_locations.iter().enumerate() {
+            if ship.food[index] {
+                let distance_squared = food.distance_squared(ship.location).max(1.0);
+
+                greens += 1.0 / distance_squared;
+                greens_delta +=
+                    (*food - ship.location).normalize().dot(facing_direction) / distance_squared;
+                horizontal_green_deta += (*food - ship.location)
+                    .normalize()
+                    .dot(facing_direction.perp())
+                    / distance_squared;
+            }
+        }
+
+        for wall in wall_locations {
+            let distance_squared = wall.distance_squared(ship.location).max(1.0);
+
+            reds += 1.0 / distance_squared;
+            reds_delta +=
+                (wall - ship.location).normalize().dot(facing_direction) / distance_squared;
+
+            horizontal_red_delta += (wall - ship.location)
+                .normalize()
+                .dot(facing_direction.perp())
+                / distance_squared;
+        }
+
+        return [
+            greens * 16.,
+            greens_delta * 16.,
+            horizontal_green_deta * 16.,
+            ship.velocity.dot(facing_direction),
+            ship.velocity.dot(facing_direction.perp()),
+            reds * 16.0,
+            reds_delta * 16.0,
+            horizontal_red_delta * 16.0,
+            ship.angular_velocity,
+            1.0,
+        ];
+    }
 }
 
 impl ggez::event::EventHandler for State {
@@ -223,55 +364,11 @@ impl ggez::event::EventHandler for State {
                 continue;
             }
 
-            let facing_direction = glam::Vec2::new(ship.angle.cos(), ship.angle.sin());
-
-            let mut greens = 0.0;
-            let mut greens_delta = 0.0;
-            let mut horizontal_green_deta: f32 = 0.0;
-            let mut reds = 0.0;
-            let mut reds_delta = 0.0;
-
-            let mut horizontal_red_delta = 0.0;
-
-            for (index, food) in self.food_locations.iter().enumerate() {
-                if ship.food[index] {
-                    let distance_squared = food.distance_squared(ship.location).max(1.0);
-
-                    greens += 1.0 / distance_squared;
-                    greens_delta += (*food - ship.location).normalize().dot(facing_direction)
-                        / distance_squared;
-                    horizontal_green_deta += (*food - ship.location)
-                        .normalize()
-                        .dot(facing_direction.perp())
-                        / distance_squared;
-                }
-            }
-
-            for wall in &self.wall_locations {
-                let distance_squared = wall.distance_squared(ship.location).max(1.0);
-
-                reds += 1.0 / distance_squared;
-                reds_delta +=
-                    (wall - ship.location).normalize().dot(facing_direction) / distance_squared;
-
-                horizontal_red_delta += (wall - ship.location)
-                    .normalize()
-                    .dot(facing_direction.perp())
-                    / distance_squared;
-            }
-
-            let forces = ship.brain.evaluate([
-                greens * 16.,
-                greens_delta * 16.,
-                horizontal_green_deta * 16.,
-                ship.velocity.dot(facing_direction),
-                ship.velocity.dot(facing_direction.perp()),
-                reds * 16.0,
-                reds_delta * 16.0,
-                horizontal_red_delta * 16.0,
-                ship.angular_velocity,
-                1.0,
-            ]);
+            let forces = ship.brain.evaluate(Self::calculate_inputs(
+                ship,
+                &self.food_locations,
+                &self.wall_locations,
+            ));
 
             ship.angular_velocity *= 0.9;
             ship.velocity *= 0.99;
@@ -288,18 +385,23 @@ impl ggez::event::EventHandler for State {
             ship.location += ship.velocity;
             ship.angle += ship.angular_velocity;
 
+            if ship.time_last_food_eaten + 400 < self.steps {
+                ship.die(self.steps);
+                continue;
+            }
+
             for (index, food) in self.food_locations.iter().enumerate() {
-                if ship.food[index] && ship.location.distance_squared(*food) <= 2.0 {
-                    ship.food[index] = false;
-                    ship.brain.fitness += 1.0;
+                if ship.food[index]
+                    && ship.location.distance_squared(*food) <= FOOD_RADIUS * FOOD_RADIUS
+                {
+                    ship.eat(index, self.steps);
                     self.food_eaten[index] += 1;
                 }
             }
 
             for wall in self.wall_locations.iter() {
                 if ship.location.distance_squared(*wall) <= 10.0 {
-                    ship.alive = false;
-                    ship.brain.fitness += self.steps as f32 / 1000.0;
+                    ship.die(self.steps);
                     break;
                 }
             }
@@ -309,8 +411,13 @@ impl ggez::event::EventHandler for State {
             }
         }
 
-        if living_ships == 0 || self.steps >= if self.round == 0 { 1000 } else { 2000 } {
+        if living_ships == 0 {
             self.round += 1;
+
+            for ship in self.population.iter_mut() {
+                ship.brain.fitness = ship.food.iter().filter(|&i| !i).count() as f32;
+            }
+
             self.best_fitness = self
                 .population
                 .iter()
@@ -320,7 +427,11 @@ impl ggez::event::EventHandler for State {
 
             let save_file = std::fs::File::create("save.cbor")?;
             ciborium::into_writer(
-                &(self.round, self.best_fitness, &self.population),
+                &(
+                    self.round,
+                    self.best_fitness,
+                    self.population.iter().map(|i| &i.brain).collect::<Vec<_>>(),
+                ),
                 save_file,
             )
             .map_err(|err| error::GameError::CustomError(format!("{err:?}")))?;
@@ -357,10 +468,14 @@ impl ggez::event::EventHandler for State {
         let mut canvas = graphics::Canvas::from_frame(ctx, graphics::Color::BLACK);
         canvas.set_screen_coordinates(graphics::Rect::new(-50.0, -50.0, 150.0, 100.0));
 
-        let rectangle = graphics::Mesh::new_rectangle(
+        let rectangle = graphics::Mesh::new_polygon(
             ctx,
             graphics::DrawMode::fill(),
-            graphics::Rect::new(-0.8, -1.0, 2.0, 1.6),
+            &[
+                glam::Vec2::new(-1.0, -0.8),
+                glam::Vec2::new(1.0, -0.0),
+                glam::Vec2::new(-1.0, 0.8),
+            ],
             graphics::Color::WHITE,
         )?;
 
@@ -408,7 +523,7 @@ impl ggez::event::EventHandler for State {
             mint::Point2 { x: 0.0, y: 0.0 },
             WALL_RADIUS,
             0.1,
-            graphics::Color::RED,
+            graphics::Color::from_rgb(128, 12, 0),
         )?;
 
         for &wall in &self.wall_locations {
@@ -416,9 +531,10 @@ impl ggez::event::EventHandler for State {
         }
 
         let mut text = graphics::Text::new(format!(
-            "Round {}, Best Fitness {}, fps: {:.1}",
+            "Round {}, Best Fitness {}, Alive: {}, fps: {:.1}",
             self.round,
             self.best_fitness,
+            self.population.iter().filter(|s| s.alive).count(),
             ctx.time.fps()
         ));
         text.set_scale(32.0);
@@ -450,15 +566,11 @@ fn main() -> Result<(), GameError> {
 
     let state = if std::path::Path::new("save.cbor").exists() {
         let file = std::fs::File::open("save.cbor")?;
-        let (round, best_fitness, population): (u32, f32, Vec<Spaceship>) =
-            ciborium::from_reader(file)
-                .map_err(|err| GameError::CustomError(format!("{err:?}")))?;
+        let (round, best_fitness, population): (u32, f32, Vec<Brain>) = ciborium::from_reader(file)
+            .map_err(|err| GameError::CustomError(format!("{err:?}")))?;
 
         State {
-            population: population
-                .iter()
-                .map(|i| Spaceship::new(i.brain.clone()))
-                .collect(),
+            population: population.into_iter().map(Spaceship::new).collect(),
             round,
             best_fitness,
             steps: 0,
